@@ -1,0 +1,121 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-api-script
+data:
+  web-api.js: |
+    import http from 'k6/http';
+    import { check } from 'k6';
+    import { Trend } from 'k6/metrics';
+
+    export let options = {
+        thresholds: {
+            http_req_failed: [
+                {
+                    threshold: 'rate<0.01',
+                    abortOnFail: true,
+                    delayAbortEval: '10s',
+                },
+            ],
+            http_req_duration: [
+                {
+                    threshold: 'p(95)<500',
+                    abortOnFail: true,
+                    delayAbortEval: '10s',
+                },
+            ], 
+        },
+        discardResponseBodies: true,
+        scenarios: {
+            ramping_arrival: {
+                executor: 'ramping-arrival-rate',
+                startRate: 1,
+                timeUnit: '1s',
+                preAllocatedVUs: 100,
+                stages: [
+                    { duration: '10m',  target: 12 },
+                    { duration: '45m',  target: 12 },
+                    { duration: '5m',   target: 0 },
+                ],
+            },
+        },
+    };
+    
+    // const Cities                = 'http://web-api/Cities/';
+    // const Forecast              = 'http://web-api/Forecast/';
+    // const WeatherForecast       = 'http://web-api/WeatherForecast/';
+    // const paramsGet             = { headers: {'accept': 'text/plain'},};
+    
+    const Cities                = 'http://91.185.85.213/Cities/';
+    const Forecast              = 'http://91.185.85.213/Forecast/';
+    const WeatherForecast       = 'http://91.185.85.213/WeatherForecast/';
+    const paramsGet             = { headers: {'Host': 'web-api','accept': 'text/plain'},};
+
+    const uptimeTrendCities     = new Trend('GET_Cities');
+    const uptimeTrendForecas    = new Trend('GET_Forecast');
+    const uptimeTrendWeatherForecast    = new Trend('GET_WeatherForecast');
+
+    export default function () {
+        let response;
+        for (let i = 0; i < 20; i++) {
+            response = http.get(Cities, paramsGet);
+            uptimeTrendCities.add(response.timings.duration);
+            check(response, {
+                "status code should be 200": res => res.status === 200,
+            });
+            response = http.get(Forecast, paramsGet);
+            uptimeTrendForecas.add(response.timings.duration);
+            check(response, {
+                "status code should be 200": res => res.status === 200,
+            });
+        };
+        response = http.get(WeatherForecast, paramsGet);
+        uptimeTrendWeatherForecast.add(response.timings.duration);
+        check(response, {
+            "status code should be 200": res => res.status === 200,
+        });
+    };
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      containers:
+      - name: k6
+        image: grafana/k6
+        env:
+        - name: K6_CLOUD_TOKEN
+          value: *
+        args: 
+        - cloud
+        - /tmp/web-api.js
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 300m
+            memory: 256Mi
+        # livenessProbe:
+        #   exec:
+        #     command:
+        #     - cat /tmp/web-api.js
+        #   initialDelaySeconds: 10
+        #   periodSeconds: 15
+        #   timeoutSeconds: 15
+        #   failureThreshold: 3
+        volumeMounts:
+        - mountPath: /tmp
+          name: configmaps
+      restartPolicy: Never
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: web-api-script
+        name: configmaps
